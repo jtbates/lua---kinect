@@ -1,4 +1,5 @@
 #include "preprocess.h"
+#include "cuda.h"
 
 #include <iostream> // REMOVE THIS
 #include <math.h>
@@ -80,6 +81,32 @@ void kinect::preprocess_depth(uint16_t* depth, uint8_t* rgb, uint8_t* depth_out)
 	delete depth_abs;
 	delete depth_proj;
 }
+
+void kinect::preprocess_depth_par(uint16_t* depth, uint8_t* rgb, uint8_t* depth_out) {
+
+	// Remove the depth nonlinearity.
+	float* depth_abs = new float[HEIGHT * WIDTH];
+	remove_depth_nonlinearity(depth, depth_abs);
+	
+	// Next, project the depth image onto the RGB image using the calibrated
+	// internal parameters.
+	float* depth_proj = new float[HEIGHT * WIDTH];
+  
+  // Crucial for the background.
+  for (int i = 0; i < HEIGHT * WIDTH; ++i) {
+    depth_proj[i] = 0;
+  }
+  
+	project_depth_par(depth_abs, depth_proj);
+  
+  // Finally, scale the output.
+	scale_depth(depth_proj, depth_out);
+	
+	// Cleanup.
+	delete depth_abs;
+	delete depth_proj;
+}
+
 
 void kinect::project_depth(double* depth_abs, double* depth_proj) {
 	// ****************************************
@@ -209,6 +236,18 @@ void kinect::remove_depth_nonlinearity(uint16_t* src, double* dst) {
 	}
 }
 
+void kinect::remove_depth_nonlinearity(uint16_t* src, float* dst) {
+	for (int i = 0; i < HEIGHT * WIDTH; ++i, ++src, ++dst) {
+		*dst = DN_W / (DN_B - static_cast<float> (*src));
+		
+		if (*dst > MAX_DEPTH) {
+			*dst = MAX_DEPTH;
+		} else if (*dst < 0) {
+			*dst = 0;
+		}
+	}
+}
+
 // TODO(silberman): the matlab code throws out the bottom and top 2%. 
 // We may want to do the same.
 void kinect::scale_depth(double* src, uint8_t* dst) {
@@ -216,6 +255,29 @@ void kinect::scale_depth(double* src, uint8_t* dst) {
 	double max = 0;
 	double min = 10e10;
 	double* src_p = src;
+	for (int i = 0; i < HEIGHT * WIDTH; ++i, ++src_p) {
+		if (*src_p > max) {
+			max = *src_p;
+		}
+		if (*src_p < min) {
+			min = *src_p;
+		}
+	}
+	
+	src_p = src;
+	char val;
+	for (int i = 0; i < HEIGHT * WIDTH; ++i, ++src, ++dst) {
+		*dst = static_cast<char>(round(255.0 * (*src-min) / (max-min)));
+	}
+}
+
+// TODO(silberman): the matlab code throws out the bottom and top 2%. 
+// We may want to do the same.
+void kinect::scale_depth(float* src, uint8_t* dst) {
+	
+	float max = 0;
+	float min = 10e10;
+	float* src_p = src;
 	for (int i = 0; i < HEIGHT * WIDTH; ++i, ++src_p) {
 		if (*src_p > max) {
 			max = *src_p;

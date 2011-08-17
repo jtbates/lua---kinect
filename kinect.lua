@@ -11,19 +11,54 @@ require 'libkinect'
 ----------------------------------
 kinect = {}
 
-function kinect.init()
+-- Initializes the Kinect.
+-- 
+-- Args:
+--   kinectParams - a table of kinect calibration parameters. These will,
+--                  generally speaking, be different for each Kinect device.
+function kinect.init(kinectParams)
    if not kinect.initialized then
+	 
       kinect.rgb = torch.Tensor()
       kinect.depth = torch.Tensor()
+			kinect.projDepth = torch.Tensor()
+			kinect.filtered = torch.Tensor()
+			
+			kinect.params = kinectParams
+			
       torch.Tensor().kinect.init()
       kinect.initialized = true
    end
+end
+
+function kinect.stop()
+  local type = kinect.rgb
+	type.kinect.stop()
+	kinect.initialized = false
 end
 
 function kinect.getRGBD()
    local type = kinect.rgb
    type.kinect.getRGBD(kinect.rgb, kinect.depth)
    return kinect.rgb, kinect.depth
+end
+
+function kinect.project(depth)
+  local type = kinect.rgb
+	type.kinect.project(depth, kinect.projDepth)
+	return kinect.projDepth
+end
+
+function kinect.projectPar(depth)
+  local type = kinect.rgb
+	type.kinect.project_par(depth, kinect.projDepth)
+	return kinect.projDepth
+end
+
+function kinect.filterCbf(depthProj, rgb)
+  local type = kinect.rgb
+	type.kinect.filterCbf(depthProj, rgb, kinect.filtered)
+	return kinect.filtered
 end
 
 ----------------------------------

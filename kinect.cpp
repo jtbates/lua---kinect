@@ -2,7 +2,7 @@
 #include "TH.h"
 #include "luaT.h"
 
-#include <libfreenect.hpp>
+#include <libfreenect.h>
 
 #define torch_(NAME) TH_CONCAT_3(torch_, Real, NAME)
 #define torch_string_(NAME) TH_CONCAT_STRING_3(torch., Real, NAME)

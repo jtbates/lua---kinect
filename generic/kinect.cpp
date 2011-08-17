@@ -4,9 +4,15 @@
 
 #include <pthread.h>
 #include <assert.h>
+#include <libfreenect.h>
+
+#include "preprocess.h"
+
+#include "cbf.h"
 
 #ifndef _FREENECT_WRAPPER_
 #define _FREENECT_WRAPPER_
+
 static freenect_context *f_ctx;
 static freenect_device *f_dev;
 static pthread_t freenect_thread;
@@ -17,6 +23,17 @@ volatile int die = 0;
 // front: owned by GL, "currently being drawn"
 uint16_t *depth_mid, *depth_front;
 uint8_t *rgb_back, *rgb_mid, *rgb_front;
+
+// Variables for projection.
+uint16_t* depth_proj_in;
+uint8_t* depth_proj_out;
+
+// Variables for filtering.
+uint8_t* intensity;
+bool* img_noise;
+uint8_t* depth_filt;
+
+
 
 int freenect_angle = 0;
 
@@ -37,54 +54,13 @@ void depth_cb(freenect_device *dev, void *v_depth, uint32_t timestamp) {
   pthread_mutex_lock(&gl_backbuf_mutex);
   for (int i = 0; i < 640*480; i++) {
     depth_mid[i] = depth[i];
-
-//     int pval = t_gamma[depth[i]];
-//     int lb = pval & 0xff;
-//     switch (pval>>8) {
-//     case 0:
-//       depth_mid[3*i+0] = 255;
-//       depth_mid[3*i+1] = 255-lb;
-//       depth_mid[3*i+2] = 255-lb;
-//       break;
-//     case 1:
-//       depth_mid[3*i+0] = 255;
-//       depth_mid[3*i+1] = lb;
-//       depth_mid[3*i+2] = 0;
-//       break;
-//     case 2:
-//       depth_mid[3*i+0] = 255-lb;
-//       depth_mid[3*i+1] = 255;
-//       depth_mid[3*i+2] = 0;
-//       break;
-//     case 3:
-//       depth_mid[3*i+0] = 0;
-//       depth_mid[3*i+1] = 255;
-//       depth_mid[3*i+2] = lb;
-//       break;
-//     case 4:
-//       depth_mid[3*i+0] = 0;
-//       depth_mid[3*i+1] = 255-lb;
-//       depth_mid[3*i+2] = 255;
-//       break;
-//     case 5:
-//       depth_mid[3*i+0] = 0;
-//       depth_mid[3*i+1] = 0;
-//       depth_mid[3*i+2] = 255-lb;
-//       break;
-//     default:
-//       depth_mid[3*i+0] = 0;
-//       depth_mid[3*i+1] = 0;
-//       depth_mid[3*i+2] = 0;
-//       break;
-//     }
   }
   got_depth++;
   pthread_cond_signal(&gl_frame_cond);
   pthread_mutex_unlock(&gl_backbuf_mutex);
 }
 
-void rgb_cb(freenect_device *dev, void *rgb, uint32_t timestamp)
-{
+void rgb_cb(freenect_device *dev, void *rgb, uint32_t timestamp) {
   pthread_mutex_lock(&gl_backbuf_mutex);
 
   // swap buffers
@@ -156,12 +132,20 @@ static int kinect_(init)(lua_State *L) {
     user_device_number = lua_tonumber(L, 1);
   }
 
-  depth_mid = (uint16_t*) malloc(640*480*2);
-  depth_front = (uint16_t*) malloc(640*480*2);
-  rgb_back = (uint8_t*) malloc(640*480*3);
-  rgb_mid = (uint8_t*) malloc(640*480*3);
-  rgb_front = (uint8_t*) malloc(640*480*3);
-
+  depth_mid = (uint16_t*) malloc(640 * 480 * sizeof(uint16_t));
+  depth_front = (uint16_t*) malloc(640 * 480 * sizeof(uint16_t));
+	
+	depth_proj_in = (uint16_t*) malloc(640 * 480 * sizeof(uint16_t));
+	depth_proj_out = (uint8_t*) malloc(640 * 480);
+	
+  rgb_back = (uint8_t*) malloc(640 * 480 * 3);
+  rgb_mid = (uint8_t*) malloc(640 * 480 * 3);
+  rgb_front = (uint8_t*) malloc(640 * 480 * 3);
+	
+	intensity = (uint8_t*) malloc(640 * 480 * sizeof(uint8_t));
+	img_noise = (bool*) malloc(640 * 480 * sizeof(bool));
+	depth_filt = (uint8_t*) malloc(640 * 480 * sizeof(uint8_t));
+	
   if (freenect_init(&f_ctx, NULL) < 0) {
     printf("freenect_init() failed\n");
     return 0;
@@ -187,6 +171,118 @@ static int kinect_(init)(lua_State *L) {
 }
 
 static int kinect_(stop)(lua_State *L) {
+	die = 1;
+	pthread_join(freenect_thread, NULL);
+	free(depth_mid);
+	free(depth_front);
+	
+	free(depth_proj_in);
+	free(depth_proj_out);
+	
+	free(rgb_back);
+	free(rgb_mid);
+	free(rgb_front);
+	
+	free(intensity);
+	free(img_noise);
+	free(depth_filt);
+	
+	// Not pthread_exit because OSX leaves a thread lying around and doesn't exit
+}
+
+static int kinect_(project)(lua_State *L) {
+  THTensor *depth_th = (THTensor *) luaT_checkudata(L, 1, torch_(Tensor_id));
+	THTensor *depth_proj_th = (THTensor *) luaT_checkudata(L, 2, torch_(Tensor_id));
+	
+	// Copy the depth in variable.
+	real *depth_th_p = THTensor_(data)(depth_th);
+  for (int k = 0; k < 640*480*1; k++) {
+    depth_proj_in[k] = (uint16_t) depth_th_p[k];
+  }
+	
+	// Actually performs the preprocessing.
+	kinect::preprocess_depth(depth_proj_in, NULL, depth_proj_out);
+	
+	// Now copy back into the Torch tensor.
+	THTensor_(resize3d)(depth_proj_th, 1, 480, 640);
+	real *depth_proj_th_p = THTensor_(data)(depth_proj_th);
+	for (int k = 0; k < 640 * 480; ++k) {
+		depth_proj_th_p[k] = (real) depth_proj_out[k];
+	}
+}
+
+// Parallel (GPU projection.
+static int kinect_(project_par)(lua_State *L) {
+  THTensor *depth_th = (THTensor *) luaT_checkudata(L, 1, torch_(Tensor_id));
+	THTensor *depth_proj_th = (THTensor *) luaT_checkudata(L, 2, torch_(Tensor_id));
+	
+	// Copy the depth in variable.
+	real *depth_th_p = THTensor_(data)(depth_th);
+  for (int k = 0; k < 640*480*1; k++) {
+    depth_proj_in[k] = (uint16_t) depth_th_p[k];
+  }
+	
+	// Actually performs the preprocessing.
+	kinect::preprocess_depth_par(depth_proj_in, NULL, depth_proj_out);
+	
+	// Now copy back into the Torch tensor.
+	THTensor_(resize3d)(depth_proj_th, 1, 480, 640);
+	real *depth_proj_th_p = THTensor_(data)(depth_proj_th);
+	for (int k = 0; k < 640 * 480; ++k) {
+		depth_proj_th_p[k] = (real) depth_proj_out[k];
+	}
+}
+
+
+static int kinect_(filterCbf)(lua_State *L) {
+  THTensor *depth_proj_th = (THTensor *) luaT_checkudata(L, 1, torch_(Tensor_id));
+	THTensor *rgb_th = (THTensor *) luaT_checkudata(L, 2, torch_(Tensor_id));
+	THTensor *depth_filt_th = (THTensor *) luaT_checkudata(L, 3, torch_(Tensor_id));
+	
+	// Translate the depth torch tensor to a c-based one.
+	real *depth_proj_th_p = THTensor_(data)(depth_proj_th);
+  for (int k = 0; k < 640*480*1; k++) {
+    depth_proj_out[k] = (uint16_t) depth_proj_th_p[k];
+  }
+	
+	// Translate the rgb torch tensor to a c-based one.
+	real *rgb_th_p = THTensor_(data)(rgb_th);
+	
+	for (int c = 0; c < 3; c++) {
+		for (int k = 0; k < 640*480; k++) {
+			rgb_front[k*3 + c] = (uint8_t) rgb_th_p[c*640*480 + k];
+		}
+	}
+	
+	// convert rgb to gray
+	uint8_t* rgb_front_p = rgb_front;
+	uint8_t R, G, B;
+	for (int i = 0; i < 480*640; ++i) {
+		R = *rgb_front_p++;
+		G = *rgb_front_p++;
+		B = *rgb_front_p++;
+		intensity[i] = uint8_t(0.2989 * (double)R + 0.5870 * (double)G + 0.1140 * (double)B);
+	}
+	
+	uint8_t* depth_proj_p = depth_proj_out;
+	bool* img_noise_p = img_noise;
+	for (int i = 0; i < 480*640; ++i, ++depth_proj_p) {
+		*img_noise_p++ = *depth_proj_p == 0 || *depth_proj_p > 254;
+	}
+	
+	double sigmas_s[] = {12, 5, 8};
+	double sigmas_r[] = {0.2, 0.08, 0.02};
+	
+	// Now, filter the depth.
+	kinect::cbf(depth_proj_out, intensity, img_noise, depth_filt, 3,
+							&sigmas_s[0], &sigmas_r[0]);
+	
+	// Finally, copy the filtered image back into the torch tensor.
+	THTensor_(resize3d)(depth_filt_th, 1, 480, 640);
+	real *depth_filt_th_p = THTensor_(data)(depth_filt_th);
+	for (int k = 0; k < 640 * 480; ++k) {
+		depth_filt_th_p[k] = (real) depth_filt[k];
+	}
 }
 
 static int kinect_(getRGBD)(lua_State *L) {
@@ -265,8 +361,12 @@ static int kinect_(getRGBD)(lua_State *L) {
 
 extern "C" {
   static const struct luaL_Reg kinect_(methods__) [] = {
-    {"init", kinect_(init)},
+    {"filterCbf", kinect_(filterCbf)},
     {"getRGBD", kinect_(getRGBD)},
+    {"init", kinect_(init)},
+    {"project", kinect_(project)},
+    {"project_par", kinect_(project_par)},
+    {"stop", kinect_(stop)},
     {NULL, NULL}
   };
 

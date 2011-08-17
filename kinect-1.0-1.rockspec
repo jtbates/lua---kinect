@@ -36,10 +36,32 @@ build = {
 
          find_package (Torch REQUIRED)
          find_package (Freenect REQUIRED)
+         find_package (Libusb REQUIRED)
+         find_package (Cuda REQUIRED)
+				 
+				 message (STATUS "Found Cuda installed in " ${CUDA_INCLUDE_DIR})
 
-         include_directories (${FREENECT_INCLUDE_DIR} ${TORCH_INCLUDE_DIR} ${PROJECT_SOURCE_DIR})
-         add_library (kinect SHARED kinect.cpp)
-         target_link_libraries (kinect ${TORCH_LIBRARIES} ${FREENECT_LIBRARIES})
+         # Compile CUDA code.
+				 set (CUDA_TARGET_SM "sm_13")
+				 set (src-cuda depth_to_point_cloud_par.cu)
+				 cuda_compile (gen-cuda ${src-cuda})
+				 
+
+         include_directories (${LIBUSB_INCLUDE_DIR})
+         include_directories (${FREENECT_INCLUDE_DIR})
+         include_directories (${TORCH_INCLUDE_DIR})
+
+         include_directories (${CUDA_INCLUDE_DIR})
+
+         include_directories (${PROJECT_SOURCE_DIR})
+         include_directories ("cross_bf")
+         include_directories ("cross_bf/include")
+				 
+         cuda_add_library (kinect SHARED kinect.cpp preprocess.cpp cbf.cpp depth_to_point_cloud_par.cu)
+         target_link_libraries (kinect ${TORCH_LIBRARIES}
+				                               ${FREENECT_LIBRARIES}
+																			 ${LIBUSB_LIBRARIES})
+
          install_targets (/lib kinect)
          install_files(/lua kinect.lua)
    ]],
