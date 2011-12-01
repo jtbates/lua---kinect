@@ -12,7 +12,7 @@ FIND_PATH(LIBUSB_INCLUDE_DIR libusb.h
   /usr/include
 )
 
-FIND_LIBRARY(LIBUSB_libusb_LIBRARY libusb
+FIND_LIBRARY(LIBUSB_libusb_LIBRARY NAMES libusb libusb-1.0.dylib
   /usr/local/lib
   /usr/lib
 )
